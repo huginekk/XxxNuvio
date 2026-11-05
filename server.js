@@ -5,43 +5,13 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 7000;
 
-// === REAL-DEBRID API TOKEN ===
-const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
-
 app.use(cors());
-
-// Odblokování/Zrychlení přes Real-Debrid
-async function unrestrictWithRD(targetUrl) {
-  if (!RD_TOKEN) return null;
-  try {
-    const params = new URLSearchParams();
-    params.append('link', targetUrl);
-
-    const res = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', params, {
-      headers: {
-        'Authorization': `Bearer ${RD_TOKEN}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      timeout: 8000
-    });
-
-    if (res.data && res.data.download) {
-      return {
-        title: `⚡ Real-Debrid MP4 (${res.data.filename || 'Direct Stream'})`,
-        url: res.data.download
-      };
-    }
-  } catch (err) {
-    console.warn('[RD Error]:', err.response?.data?.error || err.message);
-  }
-  return null;
-}
 
 const manifest = {
   id: "org.adult.nuvio.eporner",
-  version: "2.1.0",
-  name: "Adult Catalog (Real-Debrid)",
-  description: "Doplněk pro Nuvio s přímými MP4 streamy",
+  version: "2.2.0",
+  name: "Adult Catalog",
+  description: "Doplněk pro Nuvio s přímými MP4 streamy a HTTP hlavičkami",
   logo: "https://www.eporner.com/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
@@ -149,7 +119,7 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   });
 });
 
-// 3. STREAM ENDPOINT (Extrakce přímých MP4 souborů z Embedu)
+// 3. STREAM ENDPOINT (Přímé MP4 + Předání Referer/UA hlaviček přehrávači)
 app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   const rawId = req.params.id.replace(/\.json$/, '');
   const videoId = rawId.replace('ep:', '');
@@ -169,11 +139,9 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
     const streams = [];
     const html = response.data || '';
 
-    // Extrakce všech přímých MP4 odkazů z HTML/JS
     const mp4Matches = html.match(/https?:\/\/[^"'\s]+\.mp4[^"'\s]*/g);
 
     if (mp4Matches) {
-      // Očištění escaped lomítek (\\/) a zamezení duplicit
       const cleanUrls = [...new Set(mp4Matches.map(u => u.replace(/\\/g, '')))];
 
       for (const mp4Url of cleanUrls) {
@@ -183,21 +151,21 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         else if (mp4Url.includes('480p')) quality = '480p SD';
         else if (mp4Url.includes('2160p') || mp4Url.includes('4k')) quality = '4K Ultra HD';
 
-        // Pokus o zrychlení/odblokování přes Real-Debrid
-        const rdStream = await unrestrictWithRD(mp4Url);
-        if (rdStream) {
-          streams.push(rdStream);
-        } else {
-          // Přímý stream přímo z CDN zdroje (funkční v přehrávači Nuvio)
-          streams.push({
-            title: `Direct Stream (${quality})`,
-            url: mp4Url
-          });
-        }
+        streams.push({
+          title: `Direct Stream (${quality})`,
+          url: mp4Url,
+          behaviorHints: {
+            notSupported: false,
+            requestHeaders: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              'Referer': 'https://www.eporner.com/'
+            }
+          }
+        });
       }
     }
 
-    console.log(`[Stream Success] Nalezeno přímých MP4 streamů: ${streams.length}`);
+    console.log(`[Stream Success] Nalezeno funkčních streamů: ${streams.length}`);
     res.json({ streams });
   } catch (err) {
     console.error('[Stream Error]:', err.message);
@@ -206,5 +174,5 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Addon v2.1.0 běží na portu ${PORT}`);
+  console.log(`Addon v2.2.0 běží na portu ${PORT}`);
 });
