@@ -10,7 +10,25 @@ const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
 
 app.use(cors());
 
-// Odblokování magnetu přes Real-Debrid API na přímý MP4/MKV stream
+// Pomocná funkce pro vyčištění názvu z torrentu
+function cleanTitle(rawName) {
+  if (!rawName) return 'Adult Stream';
+  return rawName
+    .replace(/\./g, ' ')
+    .replace(/(1080p|720p|2160p|4k|hd|sd|x264|x265|hevc|web-dl|webrip|mp4|mkv|avi|xxx|aac|site)/gi, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Generátor náhledových plakátů pro Nuvio (rozlišení 400x600)
+function generatePoster(rawName) {
+  const cleaned = cleanTitle(rawName);
+  const text = encodeURIComponent(cleaned.substring(0, 35));
+  return `https://placehold.co/400x600/181824/E1E7EF.jpg?text=${text}`;
+}
+
+// Odblokování magnetu přes Real-Debrid API
 async function unrestrictMagnetWithRD(infoHash) {
   if (!RD_TOKEN) return null;
   try {
@@ -58,7 +76,7 @@ async function unrestrictMagnetWithRD(infoHash) {
   return null;
 }
 
-// Získání funkčních dat z API
+// Získání torrent dat
 async function fetchTorrents(searchQuery) {
   const query = searchQuery ? encodeURIComponent(searchQuery) : '1080p';
   const urls = [
@@ -90,10 +108,9 @@ async function fetchTorrents(searchQuery) {
   return [];
 }
 
-// Manifest přesně odpovídající starému nastavení v Nuvio
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "3.3.0",
+  version: "3.4.0",
   name: "FullPorn Catalog",
   description: "Doplněk pro Nuvio s přímým odblokováním přes Real-Debrid",
   logo: "https://thepiratebay.org/favicon.ico",
@@ -135,7 +152,7 @@ function formatSize(bytes) {
   return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// 1. CATALOG ENDPOINT (Reaguje na jakékoliv ID katalogu)
+// 1. CATALOG ENDPOINT
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
@@ -147,17 +164,21 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 
     rawItems.forEach(item => {
       if (!item.info_hash || item.id === '0') return;
+      
       const sizeStr = formatSize(item.size);
+      const cleanedName = cleanTitle(item.name);
+      const posterUrl = generatePoster(item.name);
+
       metas.push({
         id: `fp:${item.info_hash}`,
         type: "other",
-        name: item.name,
-        poster: manifest.background,
-        description: `Velikost: ${sizeStr} | Seeds: ${item.seeders}`
+        name: cleanedName,
+        poster: posterUrl,
+        description: `Původní název: ${item.name}\nVelikost: ${sizeStr} | Seeds: ${item.seeders}`
       });
     });
 
-    console.log(`[Catalog Success] Odpovídám s ${metas.length} položkami.`);
+    console.log(`[Catalog Success] Odesláno ${metas.length} videí s náhledy.`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -174,10 +195,10 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
     meta: {
       id: rawId,
       type: "other",
-      name: `Adult Stream (${infoHash.substring(0, 8)})`,
+      name: `Detail videa (${infoHash.substring(0, 8)})`,
       poster: manifest.background,
       background: manifest.background,
-      description: "Přehrávání přes Real-Debrid."
+      description: "Přehrávání obsahu přes Real-Debrid."
     }
   });
 });
@@ -190,13 +211,11 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   try {
     const streams = [];
 
-    // Odblokování přes Real-Debrid
     const rdResult = await unrestrictMagnetWithRD(infoHash);
     if (rdResult) {
       streams.push(rdResult);
     }
 
-    // Záložní magnet odkaz
     streams.push({
       title: "Torrent Stream (InfoHash)",
       infoHash: infoHash
@@ -209,4 +228,4 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v3.3.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Addon v3.4.0 spuštěn na portu ${PORT}`));
