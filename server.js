@@ -21,11 +21,12 @@ function cleanTitle(rawName) {
     .trim();
 }
 
-// Generátor náhledových plakátů pro Nuvio (rozlišení 400x600)
-function generatePoster(rawName) {
+// Generátor náhledových plakátů s označením kvality
+function generatePoster(rawName, qualityTag) {
   const cleaned = cleanTitle(rawName);
-  const text = encodeURIComponent(cleaned.substring(0, 35));
-  return `https://placehold.co/400x600/181824/E1E7EF.jpg?text=${text}`;
+  const titleText = encodeURIComponent(cleaned.substring(0, 30));
+  const tagText = encodeURIComponent(`[${qualityTag}]`);
+  return `https://placehold.co/400x600/181824/E1E7EF.jpg?text=${titleText}%0A%0A${tagText}`;
 }
 
 // Odblokování magnetu přes Real-Debrid API
@@ -76,13 +77,23 @@ async function unrestrictMagnetWithRD(infoHash) {
   return null;
 }
 
-// Získání torrent dat
-async function fetchTorrents(searchQuery) {
-  const query = searchQuery ? encodeURIComponent(searchQuery) : '1080p';
+// Získání torrent dat podle zadané kvality/vyhledávání
+async function fetchTorrents(searchQuery, genreFilter) {
+  let searchTerm = '1080p';
+
+  if (searchQuery) {
+    searchTerm = searchQuery;
+  } else if (genreFilter) {
+    if (genreFilter === '4K Ultra HD') searchTerm = '2160p';
+    else if (genreFilter === '1080p Full HD') searchTerm = '1080p';
+    else if (genreFilter === '720p HD') searchTerm = '720p';
+    else searchTerm = 'xxx';
+  }
+
+  const encoded = encodeURIComponent(searchTerm);
   const urls = [
-    `https://apibay.org/q.php?q=${query}&cat=500`,
-    `https://apibay.org/q.php?q=xxx&cat=500`,
-    `https://apibay.org/q.php?q=hd&cat=500`
+    `https://apibay.org/q.php?q=${encoded}&cat=500`,
+    `https://apibay.org/q.php?q=${encoded}&cat=505`
   ];
 
   for (const url of urls) {
@@ -110,9 +121,9 @@ async function fetchTorrents(searchQuery) {
 
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "3.4.0",
+  version: "3.5.0",
   name: "FullPorn Catalog",
-  description: "Doplněk pro Nuvio s přímým odblokováním přes Real-Debrid",
+  description: "Doplněk pro Nuvio s rozdělením podle kvality (4K, 1080p, 720p) a Real-Debrid",
   logo: "https://thepiratebay.org/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
@@ -124,6 +135,11 @@ const manifest = {
       id: "fp_main",
       name: "FullPorn - Všechna videa",
       extra: [
+        {
+          name: "genre",
+          isRequired: false,
+          options: ["Vše", "4K Ultra HD", "1080p Full HD", "720p HD"]
+        },
         { name: "search", isRequired: false },
         { name: "skip", isRequired: false }
       ]
@@ -156,10 +172,10 @@ function formatSize(bytes) {
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
-  const { search } = extra;
+  const { search, genre } = extra;
 
   try {
-    const rawItems = await fetchTorrents(search);
+    const rawItems = await fetchTorrents(search, genre);
     const metas = [];
 
     rawItems.forEach(item => {
@@ -167,18 +183,24 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       
       const sizeStr = formatSize(item.size);
       const cleanedName = cleanTitle(item.name);
-      const posterUrl = generatePoster(item.name);
+      
+      let qTag = 'HD';
+      if (item.name.toLowerCase().includes('2160p') || item.name.toLowerCase().includes('4k')) qTag = '4K';
+      else if (item.name.toLowerCase().includes('1080p')) qTag = '1080p';
+      else if (item.name.toLowerCase().includes('720p')) qTag = '720p';
+
+      const posterUrl = generatePoster(item.name, qTag);
 
       metas.push({
         id: `fp:${item.info_hash}`,
         type: "other",
         name: cleanedName,
         poster: posterUrl,
-        description: `Původní název: ${item.name}\nVelikost: ${sizeStr} | Seeds: ${item.seeders}`
+        description: `Kvalita: ${qTag} | Velikost: ${sizeStr} | Seeds: ${item.seeders}`
       });
     });
 
-    console.log(`[Catalog Success] Odesláno ${metas.length} videí s náhledy.`);
+    console.log(`[Catalog Success] Filtrováno (${genre || 'Vše'}), odesláno ${metas.length} videí.`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -198,7 +220,7 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
       name: `Detail videa (${infoHash.substring(0, 8)})`,
       poster: manifest.background,
       background: manifest.background,
-      description: "Přehrávání obsahu přes Real-Debrid."
+      description: "Přehrávání videa přes Real-Debrid."
     }
   });
 });
@@ -228,4 +250,5 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v3.4.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Addon v3.5.0 spuštěn na portu ${PORT}`));
+  
