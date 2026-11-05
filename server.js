@@ -9,20 +9,32 @@ const BASE_URL = 'https://fullporn.to';
 
 app.use(cors());
 
-// HTTP klient s ošetřením chybových kódů
-const httpClient = axios.create({
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache'
-  },
-  timeout: 12000,
-  maxRedirects: 5,
-  validateStatus: (status) => status < 500 // Zabránění vyhození výjimky při 404
-});
+// Seznam realistických User-Agentů
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0'
+];
 
-// Hex kódování pro 100% bezpečná ID bez lomítek
+function getRandomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+async function fetchPage(targetUrl) {
+  return await axios.get(targetUrl, {
+    headers: {
+      'User-Agent': getRandomUA(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'cs-CZ,cs;q=0.9,en;q=0.8',
+      'Referer': 'https://www.google.com/',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+    },
+    timeout: 15000,
+    validateStatus: () => true // Zaznamenáme všechny HTTP kódy bez vyhození chyby
+  });
+}
+
 function encodeId(urlPath) {
   return 'fp:' + Buffer.from(urlPath).toString('hex');
 }
@@ -36,10 +48,9 @@ function decodeId(id) {
   }
 }
 
-// Manifest pro Nuvio / Stremio
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "1.0.3",
+  version: "1.0.4",
   name: "FullPorn Catalog",
   description: "Doplněk pro Nuvio s přímým parsováním streamů",
   logo: "https://fullporn.to/favicon.ico",
@@ -91,21 +102,18 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       targetUrl = `${BASE_URL}/?s=${encodeURIComponent(search)}`;
     } else if (genre) {
       targetUrl = `${BASE_URL}/category/${encodeURIComponent(genre.toLowerCase())}/`;
-    }
-
-    if (page > 1 && !search) {
+    } else if (page > 1) {
       targetUrl = `${BASE_URL}/page/${page}/`;
     }
 
-    console.log(`[Catalog] Načítám: ${targetUrl}`);
-    const response = await httpClient.get(targetUrl);
-    
-    if (response.status !== 200) {
-      console.warn(`[Catalog] Web vrátil kód ${response.status}`);
-      return res.json({ metas: [] });
-    }
+    console.log(`[Catalog Request] URL: ${targetUrl}`);
+    const response = await fetchPage(targetUrl);
+    console.log(`[Catalog Response] HTTP Kód: ${response.status}`);
 
-    const $ = cheerio.load(response.data);
+    const $ = cheerio.load(response.data || '');
+    const pageTitle = $('title').text().trim();
+    console.log(`[Catalog Response] Titulek stránky: "${pageTitle}"`);
+
     const metas = [];
 
     $('a').each((_, el) => {
@@ -136,6 +144,7 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       }
     });
 
+    console.log(`[Catalog Success] Nalezeno položek: ${metas.length}`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -159,9 +168,11 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   };
 
   try {
-    console.log(`[Meta] Načítám: ${targetUrl}`);
-    const response = await httpClient.get(targetUrl);
+    console.log(`[Meta Request] URL: ${targetUrl}`);
+    const response = await fetchPage(targetUrl);
+    
     if (response.status !== 200) {
+      console.warn(`[Meta Warning] HTTP Kód ${response.status}`);
       return res.json({ meta: defaultMeta });
     }
 
@@ -198,14 +209,14 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   const targetUrl = targetPath.startsWith('http') ? targetPath : `${BASE_URL}${targetPath}`;
 
   try {
-    console.log(`[Stream] Načítám: ${targetUrl}`);
-    const response = await httpClient.get(targetUrl);
+    console.log(`[Stream Request] URL: ${targetUrl}`);
+    const response = await fetchPage(targetUrl);
     const streams = [];
 
     if (response.status === 200) {
       const $ = cheerio.load(response.data);
 
-      // Metoda 1: Tag <video> a <source>
+      // Tag <video> a <source>
       $('video source, video').each((_, el) => {
         const src = $(el).attr('src') || $(el).attr('data-src');
         const resLabel = $(el).attr('res') || $(el).attr('label') || 'HD Stream';
@@ -217,7 +228,7 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         }
       });
 
-      // Metoda 2: Extrakce z JavaScriptu (.mp4 / .m3u8)
+      // Extrakce z JavaScriptu (.mp4 / .m3u8)
       if (streams.length === 0) {
         const scriptText = $('script').text();
         const matches = scriptText.match(/https?:\/\/[^"'\s]+\.(?:mp4|m3u8)[^"'\s]*/g);
@@ -232,7 +243,7 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         }
       }
 
-      // Metoda 3: iFrame přehrávač
+      // iFrame přehrávač
       if (streams.length === 0) {
         $('iframe').each((_, el) => {
           const src = $(el).attr('src');
@@ -246,6 +257,7 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
       }
     }
 
+    console.log(`[Stream Success] Nalezeno streamů: ${streams.length}`);
     res.json({ streams });
   } catch (err) {
     console.error('[Stream Error]:', err.message);
@@ -254,5 +266,5 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Addon běží na portu ${PORT}`);
+  console.log(`Addon v1.0.4 běží na portu ${PORT}`);
 });
