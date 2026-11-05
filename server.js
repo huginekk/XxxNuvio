@@ -9,11 +9,9 @@ const BASE_URL = 'https://fullporn.to';
 
 app.use(cors());
 
-// Seznam realistických User-Agentů
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0'
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 ];
 
 function getRandomUA() {
@@ -26,12 +24,11 @@ async function fetchPage(targetUrl) {
       'User-Agent': getRandomUA(),
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
       'Accept-Language': 'cs-CZ,cs;q=0.9,en;q=0.8',
-      'Referer': 'https://www.google.com/',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
+      'Referer': BASE_URL,
+      'Cache-Control': 'no-cache'
     },
     timeout: 15000,
-    validateStatus: () => true // Zaznamenáme všechny HTTP kódy bez vyhození chyby
+    validateStatus: () => true
   });
 }
 
@@ -50,7 +47,7 @@ function decodeId(id) {
 
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "1.0.4",
+  version: "1.0.5",
   name: "FullPorn Catalog",
   description: "Doplněk pro Nuvio s přímým parsováním streamů",
   logo: "https://fullporn.to/favicon.ico",
@@ -88,7 +85,7 @@ function parseExtra(extraStr) {
   return res;
 }
 
-// 1. CATALOG ENDPOINT
+// 1. CATALOG ENDPOINT (Očištěný od menu a navigace)
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
@@ -108,26 +105,40 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 
     console.log(`[Catalog Request] URL: ${targetUrl}`);
     const response = await fetchPage(targetUrl);
-    console.log(`[Catalog Response] HTTP Kód: ${response.status}`);
+    
+    if (response.status !== 200) {
+      console.warn(`[Catalog Response] HTTP status: ${response.status}`);
+      return res.json({ metas: [] });
+    }
 
     const $ = cheerio.load(response.data || '');
-    const pageTitle = $('title').text().trim();
-    console.log(`[Catalog Response] Titulek stránky: "${pageTitle}"`);
+
+    // ODSTRANĚNÍ HLAVIČEK, PATIČEK A MENU (aby se neparsovaly odkazy z navigace)
+    $('header, nav, footer, .menu, .sidebar, .widget, .navigation, .mobile-menu').remove();
 
     const metas = [];
 
+    // Hledáme pouze odkazy obsahující obrázky v hlavním obsahu
     $('a').each((_, el) => {
       const link = $(el);
       const href = link.attr('href') || '';
       
-      if (!href || href.includes('#') || href.includes('/category/') || href.includes('/tag/')) return;
+      // Vyfiltrování systémových odkazů a kategorií
+      if (!href || href === '#' || href.includes('/category/') || href.includes('/tag/') || href.includes('/search/') || href.includes('/page/')) return;
 
       const img = link.find('img').first();
-      const title = link.attr('title') || img.attr('alt') || link.text().trim();
-      let poster = img.attr('data-src') || img.attr('src') || img.attr('data-lazy-src') || '';
+      if (!img.length) return; // Pokud odkaz nemá obrázek, přeskočí se
 
-      if (title && title.length > 3 && (href.includes('/video/') || href.includes('/watch/') || href.length > 25)) {
-        if (poster && !poster.startsWith('http')) {
+      const title = link.attr('title') || img.attr('alt') || img.attr('title') || link.text().trim();
+      let poster = img.attr('data-src') || img.attr('src') || img.attr('data-lazy-src') || img.attr('data-original') || '';
+
+      // Ignorujeme loga, ikony a menu tlačítka
+      const lowerTitle = title.toLowerCase();
+      if (lowerTitle.includes('nejnovější') || lowerTitle.includes('nejlepší') || lowerTitle.includes('kategorie') || lowerTitle.includes('pornohvězdy') || lowerTitle.includes('fullporn')) return;
+      if (!poster || poster.includes('logo') || poster.includes('favicon')) return;
+
+      if (title.length > 5) {
+        if (!poster.startsWith('http')) {
           poster = poster.startsWith('//') ? `https:${poster}` : `${BASE_URL}${poster}`;
         }
 
@@ -137,14 +148,14 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
             id,
             type: "other",
             name: title.length > 60 ? title.substring(0, 60) + '...' : title,
-            poster: poster || manifest.background,
-            description: `Zdroj: FullPorn`
+            poster: poster,
+            description: `Zdroj: FullPorn.to`
           });
         }
       }
     });
 
-    console.log(`[Catalog Success] Nalezeno položek: ${metas.length}`);
+    console.log(`[Catalog Success] Nalezeno reálných videí: ${metas.length}`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -161,7 +172,7 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   const defaultMeta = {
     id: rawId,
     type: "other",
-    name: "FullPorn Video",
+    name: "Video Detail",
     poster: manifest.background,
     background: manifest.background,
     description: "Detail videa z FullPorn.to."
@@ -170,9 +181,7 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   try {
     console.log(`[Meta Request] URL: ${targetUrl}`);
     const response = await fetchPage(targetUrl);
-    
     if (response.status !== 200) {
-      console.warn(`[Meta Warning] HTTP Kód ${response.status}`);
       return res.json({ meta: defaultMeta });
     }
 
@@ -193,7 +202,7 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
         name: title,
         poster: poster || manifest.background,
         background: poster || manifest.background,
-        description: description || "Přehrávání videa v aplikaci Nuvio."
+        description: description || "Přímé přehrávání videa."
       }
     });
   } catch (err) {
@@ -216,10 +225,10 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
     if (response.status === 200) {
       const $ = cheerio.load(response.data);
 
-      // Tag <video> a <source>
+      // Metoda 1: Přímé MP4 / M3U8 tagy
       $('video source, video').each((_, el) => {
         const src = $(el).attr('src') || $(el).attr('data-src');
-        const resLabel = $(el).attr('res') || $(el).attr('label') || 'HD Stream';
+        const resLabel = $(el).attr('res') || $(el).attr('label') || 'HD';
         if (src && !src.startsWith('blob:')) {
           streams.push({
             title: `Přímý přehrávač (${resLabel})`,
@@ -228,7 +237,7 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         }
       });
 
-      // Extrakce z JavaScriptu (.mp4 / .m3u8)
+      // Metoda 2: Inline JS odkazy (.mp4 nebo .m3u8)
       if (streams.length === 0) {
         const scriptText = $('script').text();
         const matches = scriptText.match(/https?:\/\/[^"'\s]+\.(?:mp4|m3u8)[^"'\s]*/g);
@@ -236,20 +245,20 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
           const unique = [...new Set(matches)];
           unique.forEach((u, i) => {
             streams.push({
-              title: u.includes('.m3u8') ? 'HLS Auto Stream' : `Server Stream ${i + 1}`,
+              title: u.includes('.m3u8') ? 'HLS Stream (Auto Quality)' : `Direct Server ${i + 1}`,
               url: u
             });
           });
         }
       }
 
-      // iFrame přehrávač
+      // Metoda 3: iFrame přehrávače
       if (streams.length === 0) {
         $('iframe').each((_, el) => {
-          const src = $(el).attr('src');
-          if (src && !src.includes('facebook') && !src.includes('twitter')) {
+          const src = $(el).attr('src') || $(el).attr('data-src');
+          if (src && !src.includes('facebook') && !src.includes('twitter') && !src.includes('google')) {
             streams.push({
-              title: "Vestavěný přehrávač (Embed)",
+              title: "External Embed Player",
               url: src.startsWith('http') ? src : `https:${src}`
             });
           }
@@ -266,5 +275,5 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Addon v1.0.4 běží na portu ${PORT}`);
+  console.log(`Addon v1.0.5 běží na portu ${PORT}`);
 });
