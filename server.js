@@ -10,7 +10,18 @@ const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
 
 app.use(cors());
 
-// Pomocná funkce pro vyčištění názvu z torrentu
+// Vyčištění názvu pro vyhledávání náhledových fotek
+function cleanTitleForSearch(rawName) {
+  if (!rawName) return '';
+  return rawName
+    .replace(/\./g, ' ')
+    .replace(/(1080p|720p|2160p|4k|hd|sd|x264|x265|hevc|web-dl|webrip|mp4|mkv|avi|xxx|aac|site|onlyfans)/gi, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Vyčištění názvu pro zobrazení
 function cleanTitle(rawName) {
   if (!rawName) return 'Adult Stream';
   return rawName
@@ -21,12 +32,25 @@ function cleanTitle(rawName) {
     .trim();
 }
 
-// Generátor náhledových plakátů s označením kvality
-function generatePoster(rawName, qualityTag) {
-  const cleaned = cleanTitle(rawName);
-  const titleText = encodeURIComponent(cleaned.substring(0, 30));
-  const tagText = encodeURIComponent(`[${qualityTag}]`);
-  return `https://placehold.co/400x600/181824/E1E7EF.jpg?text=${titleText}%0A%0A${tagText}`;
+// Získání reálného náhledového obrázku přes veřejné rozhraní
+async function fetchPosterForTitle(rawName) {
+  const searchQuery = cleanTitleForSearch(rawName);
+  if (!searchQuery || searchQuery.length < 3) return null;
+
+  try {
+    const apiUrl = `https://www.eporner.com/api/v2/video/search/?query=${encodeURIComponent(searchQuery)}&per_page=1&format=json`;
+    const res = await axios.get(apiUrl, { timeout: 3500 });
+    
+    if (res.data && res.data.videos && res.data.videos.length > 0) {
+      const video = res.data.videos[0];
+      if (video.default_thumb && video.default_thumb.src) {
+        return video.default_thumb.src;
+      }
+    }
+  } catch (err) {
+    // Tichý fallback
+  }
+  return null;
 }
 
 // Odblokování magnetu přes Real-Debrid API
@@ -77,7 +101,7 @@ async function unrestrictMagnetWithRD(infoHash) {
   return null;
 }
 
-// Získání torrent dat podle zadané kvality/vyhledávání
+// Získání torrent dat
 async function fetchTorrents(searchQuery, genreFilter) {
   let searchTerm = '1080p';
 
@@ -121,9 +145,9 @@ async function fetchTorrents(searchQuery, genreFilter) {
 
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "3.5.0",
+  version: "3.6.0",
   name: "FullPorn Catalog",
-  description: "Doplněk pro Nuvio s rozdělením podle kvality (4K, 1080p, 720p) a Real-Debrid",
+  description: "Doplněk pro Nuvio s reálnými náhledy videí a Real-Debrid přehráváním",
   logo: "https://thepiratebay.org/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
@@ -168,7 +192,7 @@ function formatSize(bytes) {
   return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// 1. CATALOG ENDPOINT
+// 1. CATALOG ENDPOINT (Asynchronní priradení reálných fotek)
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
@@ -176,31 +200,34 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 
   try {
     const rawItems = await fetchTorrents(search, genre);
-    const metas = [];
+    const validItems = rawItems.filter(item => item.info_hash && item.id !== '0').slice(0, 30);
 
-    rawItems.forEach(item => {
-      if (!item.info_hash || item.id === '0') return;
-      
-      const sizeStr = formatSize(item.size);
-      const cleanedName = cleanTitle(item.name);
-      
-      let qTag = 'HD';
-      if (item.name.toLowerCase().includes('2160p') || item.name.toLowerCase().includes('4k')) qTag = '4K';
-      else if (item.name.toLowerCase().includes('1080p')) qTag = '1080p';
-      else if (item.name.toLowerCase().includes('720p')) qTag = '720p';
+    // Načtení fotek pro všechny položky současně
+    const metas = await Promise.all(
+      validItems.map(async (item) => {
+        const sizeStr = formatSize(item.size);
+        const cleanedName = cleanTitle(item.name);
 
-      const posterUrl = generatePoster(item.name, qTag);
+        let qTag = 'HD';
+        if (item.name.toLowerCase().includes('2160p') || item.name.toLowerCase().includes('4k')) qTag = '4K';
+        else if (item.name.toLowerCase().includes('1080p')) qTag = '1080p';
+        else if (item.name.toLowerCase().includes('720p')) qTag = '720p';
 
-      metas.push({
-        id: `fp:${item.info_hash}`,
-        type: "other",
-        name: cleanedName,
-        poster: posterUrl,
-        description: `Kvalita: ${qTag} | Velikost: ${sizeStr} | Seeds: ${item.seeders}`
-      });
-    });
+        // Reálný náhledový obrázek z API
+        const realPoster = await fetchPosterForTitle(item.name);
+        const fallbackPoster = `https://placehold.co/400x600/181824/E1E7EF.jpg?text=${encodeURIComponent(cleanedName.substring(0, 30))}`;
 
-    console.log(`[Catalog Success] Filtrováno (${genre || 'Vše'}), odesláno ${metas.length} videí.`);
+        return {
+          id: `fp:${item.info_hash}`,
+          type: "other",
+          name: cleanedName,
+          poster: realPoster || fallbackPoster,
+          description: `Kvalita: ${qTag} | Velikost: ${sizeStr} | Seeds: ${item.seeders}`
+        };
+      })
+    );
+
+    console.log(`[Catalog Success] Odesláno ${metas.length} položek s reálnými fotkami.`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -250,5 +277,4 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v3.5.0 spuštěn na portu ${PORT}`));
-  
+app.listen(PORT, () => console.log(`Addon v3.6.0 spuštěn na portu ${PORT}`));
