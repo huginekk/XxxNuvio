@@ -1,340 +1,190 @@
-const express = require("express");
-const cors = require("cors");
-const cheerio = require("cheerio");
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
 
 const app = express();
+const PORT = process.env.PORT || 7000;
+
+// === VÁŠ REAL-DEBRID API TOKEN ===
+const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
+
 app.use(cors());
 
-const PORT = Number(process.env.PORT || 7000);
-const SITE_URL = (process.env.SITE_URL || "https://fullporn.to").replace(/\/+$/, "");
-const ADDON_ID = "org.community.fullporn";
-const ADDON_NAME = "FullPorn.to – veřejný katalog";
-const CATALOG_ID = "fullporn-latest";
+// Odblokování přes Real-Debrid
+async function unrestrictWithRD(targetUrl) {
+  if (!RD_TOKEN) return null;
+  try {
+    const params = new URLSearchParams();
+    params.append('link', targetUrl);
 
+    const res = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', params, {
+      headers: {
+        'Authorization': `Bearer ${RD_TOKEN}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      timeout: 8000
+    });
+
+    if (res.data && res.data.download) {
+      return {
+        title: `⚡ Real-Debrid Direct (${res.data.filename || '4K/HD MP4'})`,
+        url: res.data.download
+      };
+    }
+  } catch (err) {
+    console.warn('[RD Error]:', err.response?.data?.error || err.message);
+  }
+  return null;
+}
+
+// Manifest pro Nuvio
 const manifest = {
-  id: ADDON_ID,
-  version: "1.0.0",
-  name: ADDON_NAME,
-  description: "Katalog veřejně dostupného obsahu.",
+  id: "org.adult.nuvio.eporner",
+  version: "2.0.0",
+  name: "Adult Catalog (Real-Debrid)",
+  description: "Stabilní adult katalog s vyhledáváním a 4K streamy přes Real-Debrid",
+  logo: "https://www.eporner.com/favicon.ico",
+  background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
-  types: ["movie"],
-  idPrefixes: ["fullporn:"],
+  types: ["movie", "other"],
+  idPrefixes: ["ep:"],
   catalogs: [
     {
-      type: "movie",
-      id: CATALOG_ID,
-      name: "FullPorn.to – nejnovější",
-      extra: [{ name: "search", isRequired: false }]
+      type: "other",
+      id: "ep_main",
+      name: "Adult - Hlavní nabídka",
+      extra: [
+        { name: "search", isRequired: false },
+        { name: "genre", isRequired: false, options: ["4k", "1080p", "720p", "vr", "amateur", "anal", "pov", "milf", "asian", "latina"] },
+        { name: "skip", isRequired: false }
+      ]
     }
   ],
-  behaviorHints: {
-    adult: true
-  }
+  behaviorHints: { adult: true }
 };
 
-function absoluteUrl(value, base = SITE_URL) {
-  try {
-    const url = new URL(value, base);
-    if (!["http:", "https:"].includes(url.protocol)) return null;
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-function isSiteUrl(value) {
-  try {
-    return new URL(value).hostname === new URL(SITE_URL).hostname;
-  } catch {
-    return false;
-  }
-}
-
-function makeId(url) {
-  return `fullporn:${Buffer.from(url, "utf8").toString("base64url")}`;
-}
-
-async function fetchHtml(url) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Accept": "text/html,application/xhtml+xml"
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(15000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-
-  if (!contentType.includes("text/html")) {
-    throw new Error("Zdroj nevrátil HTML.");
-  }
-
-  return await response.text();
-}
-
-function extractCards(html, pageUrl) {
-  const $ = cheerio.load(html);
-  const found = new Map();
-
-  $("a[href]").each((_, element) => {
-    const anchor = $(element);
-
-    const href = absoluteUrl(anchor.attr("href"), pageUrl);
-
-    if (!href || !isSiteUrl(href)) return;
-
-    const image = anchor.find("img").first();
-
-    const poster = absoluteUrl(
-      image.attr("data-src") ||
-      image.attr("data-original") ||
-      image.attr("src") ||
-      "",
-      pageUrl
-    );
-
-    const title =
-      (anchor.attr("title") || "").trim() ||
-      (image.attr("alt") || "").trim() ||
-      anchor.find("h1,h2,h3,h4").first().text().trim() ||
-      anchor.text().replace(/\s+/g, " ").trim();
-
-    if (!poster || !title || title.length < 3) return;
-
-    if (href === SITE_URL || href === `${SITE_URL}/`) return;
-
-    const path = new URL(href).pathname;
-
-    if (/\.(jpg|jpeg|png|webp|gif|mp4|m3u8)$/i.test(path)) {
-      return;
-    }
-
-    found.set(href, {
-      id: makeId(href),
-      type: "movie",
-      name: title.slice(0, 180),
-      poster,
-      posterShape: "landscape",
-      description: "Odkaz na stránku zdroje."
-    });
-  });
-
-  return [...found.values()];
-}
-
-function pageUrlFromId(id) {
-  const encoded = String(id || "").replace(/^fullporn:/, "");
-
-  if (!encoded) return null;
-
-  try {
-    const decoded = Buffer
-      .from(encoded, "base64url")
-      .toString("utf8");
-
-    const url = new URL(decoded);
-
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      !isSiteUrl(url.href)
-    ) {
-      return null;
-    }
-
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-async function getCatalog(searchTerm = "") {
-  const html = await fetchHtml(`${SITE_URL}/`);
-
-  let items = extractCards(html, SITE_URL);
-
-  if (searchTerm) {
-    const needle = searchTerm.toLocaleLowerCase();
-
-    items = items.filter(item =>
-      item.name.toLocaleLowerCase().includes(needle)
-    );
-  }
-
-  return items.slice(0, 100);
-}
-
-async function getMeta(id) {
-  const pageUrl = pageUrlFromId(id);
-
-  if (!pageUrl) return null;
-
-  const html = await fetchHtml(pageUrl);
-  const $ = cheerio.load(html);
-
-  const getMeta = (...selectors) => {
-    for (const selector of selectors) {
-      const value = $(selector).attr("content");
-
-      if (value) return value.trim();
-    }
-
-    return "";
-  };
-
-  const name =
-    getMeta(
-      'meta[property="og:title"]',
-      'meta[name="twitter:title"]'
-    ) ||
-    $("h1").first().text().trim() ||
-    $("title").text().trim();
-
-  const poster = absoluteUrl(
-    getMeta(
-      'meta[property="og:image"]',
-      'meta[name="twitter:image"]'
-    ),
-    pageUrl
-  );
-
-  const description =
-    getMeta(
-      'meta[property="og:description"]',
-      'meta[name="description"]'
-    ) ||
-    $("p").first().text().trim();
-
-  return {
-    id,
-    type: "movie",
-    name: name || id,
-    poster: poster || undefined,
-    description: description || " ",
-    website: pageUrl
-  };
-}
-
-async function getStreams(id) {
-  const pageUrl = pageUrlFromId(id);
-
-  if (!pageUrl) return [];
-
-  const html = await fetchHtml(pageUrl);
-  const $ = cheerio.load(html);
-
-  const candidates = new Set();
-
-  $("video source[src], video[src]").each((_, element) => {
-    const src = $(element).attr("src");
-    const url = absoluteUrl(src, pageUrl);
-
-    if (url && /\.(mp4|m3u8)(\?|$)/i.test(url)) {
-      candidates.add(url);
-    }
-  });
-
-  $(
-    'meta[property="og:video"],' +
-    'meta[property="og:video:url"],' +
-    'meta[name="twitter:player:stream"]'
-  ).each((_, element) => {
-    const url = absoluteUrl(
-      $(element).attr("content"),
-      pageUrl
-    );
-
-    if (url && /\.(mp4|m3u8)(\?|$)/i.test(url)) {
-      candidates.add(url);
-    }
-  });
-
-  return [...candidates].map((url, index) => ({
-    name: "FullPorn.to",
-    title: `Přímý stream ${index + 1}`,
-    url,
-    behaviorHints: {
-      notWebReady: false
-    }
-  }));
-}
-
-app.get("/manifest.json", (_req, res) => {
+app.get('/manifest.json', (req, res) => {
   res.json(manifest);
 });
 
-app.get(
-  "/catalog/movie/:catalogId/:extra?.json",
-  async (req, res) => {
-    if (req.params.catalogId !== CATALOG_ID) {
-      return res.json({ metas: [] });
-    }
+function parseExtra(extraStr) {
+  if (!extraStr) return {};
+  const cleaned = extraStr.replace(/\.json$/, '');
+  const params = new URLSearchParams(cleaned);
+  const res = {};
+  for (const [k, v] of params.entries()) {
+    res[k] = v;
+  }
+  return res;
+}
 
-    try {
-      const pathExtra = String(req.params.extra || "");
+// 1. CATALOG ENDPOINT (Oficiální API)
+app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
+  const extraStr = req.params.extra || '';
+  const extra = parseExtra(extraStr);
+  const { search, genre, skip } = extra;
 
-      const pathSearch = pathExtra.startsWith("search=")
-        ? decodeURIComponent(pathExtra.slice(7))
-        : "";
+  try {
+    const page = skip ? Math.floor(parseInt(skip) / 30) + 1 : 1;
+    let query = search || genre || 'all';
+    
+    const apiUrl = `https://www.eporner.com/api/v2/video/search/?query=${encodeURIComponent(query)}&per_page=30&page=${page}&format=json`;
+    console.log(`[API Request]: ${apiUrl}`);
 
-      const search = String(
-        req.query.search || pathSearch || ""
-      ).trim().slice(0, 100);
+    const response = await axios.get(apiUrl, { timeout: 10000 });
+    const metas = [];
 
-      const metas = await getCatalog(search);
-
-      res.json({ metas });
-    } catch (error) {
-      console.error("Catalog error:", error.message);
-
-      res.status(502).json({
-        metas: [],
-        error: "Katalog se nepodařilo načíst."
+    if (response.data && response.data.videos) {
+      response.data.videos.forEach(v => {
+        metas.push({
+          id: `ep:${v.id}`,
+          type: "other",
+          name: v.title,
+          poster: v.default_thumb ? v.default_thumb.src : manifest.background,
+          description: `Délka: ${v.length_min || '?'} min | Hodnocení: ${v.rate || '100'}%`
+        });
       });
     }
-  }
-);
 
-app.get("/meta/movie/:id.json", async (req, res) => {
-  try {
-    const meta = await getMeta(req.params.id);
-
-    res.json({ meta: meta || null });
-  } catch (error) {
-    console.error("Metadata error:", error.message);
-
-    res.status(502).json({
-      meta: null,
-      error: "Detail se nepodařilo načíst."
-    });
+    res.json({ metas });
+  } catch (err) {
+    console.error('[Catalog API Error]:', err.message);
+    res.json({ metas: [] });
   }
 });
 
-app.get("/stream/movie/:id.json", async (req, res) => {
+// 2. META ENDPOINT
+app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
+  const rawId = req.params.id.replace(/\.json$/, '');
+  const videoId = rawId.replace('ep:', '');
+
   try {
-    const streams = await getStreams(req.params.id);
+    const apiUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`;
+    const response = await axios.get(apiUrl, { timeout: 10000 });
+
+    if (response.data) {
+      const v = response.data;
+      return res.json({
+        meta: {
+          id: rawId,
+          type: "other",
+          name: v.title,
+          poster: v.default_thumb ? v.default_thumb.src : manifest.background,
+          background: v.default_thumb ? v.default_thumb.src : manifest.background,
+          description: `Délka videa: ${v.length_min} min. Zhlédnutí: ${v.views}.`,
+          genres: v.keywords ? v.keywords.split(',') : ["Adult"]
+        }
+      });
+    }
+  } catch (err) {
+    console.error('[Meta API Error]:', err.message);
+  }
+
+  res.json({
+    meta: {
+      id: rawId,
+      type: "other",
+      name: "Video Detail",
+      poster: manifest.background,
+      background: manifest.background,
+      description: "Detail videa."
+    }
+  });
+});
+
+// 3. STREAM ENDPOINT (Vygenerování přímých MP4 + Real-Debrid)
+app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
+  const rawId = req.params.id.replace(/\.json$/, '');
+  const videoId = rawId.replace('ep:', '');
+
+  try {
+    const pageUrl = `https://www.eporner.com/video-${videoId}/`;
+    const streams = [];
+
+    // Pokus o odblokování/urychlení stránky přes Real-Debrid
+    const rdStream = await unrestrictWithRD(pageUrl);
+    if (rdStream) {
+      streams.push(rdStream);
+    }
+
+    // Získání detailů videa z API pro přímé MP4 záložní streamy
+    const apiUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`;
+    const response = await axios.get(apiUrl, { timeout: 10000 });
+
+    if (response.data && response.data.embed) {
+      streams.push({
+        title: "Standard Web Player",
+        url: response.data.embed
+      });
+    }
 
     res.json({ streams });
-  } catch (error) {
-    console.error("Stream error:", error.message);
-
-    res.status(502).json({
-      streams: [],
-      error: "Stream se nepodařilo načíst."
-    });
+  } catch (err) {
+    console.error('[Stream API Error]:', err.message);
+    res.json({ streams: [] });
   }
-});
-
-app.get("/", (_req, res) => {
-  res.type("text").send(
-    "Nuvio addon běží. Manifest: /manifest.json"
-  );
 });
 
 app.listen(PORT, () => {
-  console.log(`Nuvio addon běží na portu ${PORT}`);
+  console.log(`Addon v2.0.0 běží na portu ${PORT}`);
 });
