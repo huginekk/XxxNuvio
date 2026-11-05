@@ -5,53 +5,16 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 7000;
 
-// === VÁŠ REAL-DEBRID API TOKEN ===
+// === REAL-DEBRID API TOKEN ===
 const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
 
 app.use(cors());
 
-// Pomocná funkce s rezervními dotazy pro 100% načtení katalogu
-async function fetchAdultTorrents(searchQuery) {
-  const query = searchQuery ? encodeURIComponent(searchQuery) : '1080p';
-  const urls = [
-    `https://apibay.org/q.php?q=${query}&cat=500`,
-    `https://apibay.org/q.php?q=${query}&cat=505`,
-    `https://apibay.org/q.php?q=xxx&cat=500`
-  ];
-
-  for (const url of urls) {
-    try {
-      console.log(`[TPB Fetch] Načítám: ${url}`);
-      const res = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*'
-        },
-        timeout: 10000
-      });
-
-      let data = res.data;
-      if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch (e) { data = null; }
-      }
-
-      if (Array.isArray(data) && data.length > 0 && data[0].id !== '0') {
-        return data;
-      }
-    } catch (err) {
-      console.warn(`[TPB Fetch Warning] ${err.message}`);
-    }
-  }
-  return [];
-}
-
-// Odblokování magnetu přes Real-Debrid API na přímý MP4 link
+// Odblokování magnetu přes Real-Debrid API na přímý MP4/MKV stream
 async function unrestrictMagnetWithRD(infoHash) {
   if (!RD_TOKEN) return null;
   try {
     const magnet = `magnet:?xt=urn:btih:${infoHash}`;
-    
-    // 1. Přidání magnetu
     const addParams = new URLSearchParams();
     addParams.append('magnet', magnet);
     const addRes = await axios.post('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', addParams, {
@@ -61,8 +24,6 @@ async function unrestrictMagnetWithRD(infoHash) {
 
     if (addRes.data && addRes.data.id) {
       const torrentId = addRes.data.id;
-
-      // 2. Výběr všech souborů v torrentu
       const selectParams = new URLSearchParams();
       selectParams.append('files', 'all');
       await axios.post(`https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`, selectParams, {
@@ -70,14 +31,12 @@ async function unrestrictMagnetWithRD(infoHash) {
         timeout: 8000
       });
 
-      // 3. Získání informací o stáhnutém souboru
       const infoRes = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, {
         headers: { 'Authorization': `Bearer ${RD_TOKEN}` },
         timeout: 8000
       });
 
       if (infoRes.data && infoRes.data.links && infoRes.data.links.length > 0) {
-        // 4. Odblokování prvního video odkazu
         const unrestrictParams = new URLSearchParams();
         unrestrictParams.append('link', infoRes.data.links[0]);
         const unrestrictRes = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', unrestrictParams, {
@@ -87,7 +46,7 @@ async function unrestrictMagnetWithRD(infoHash) {
 
         if (unrestrictRes.data && unrestrictRes.data.download) {
           return {
-            title: `⚡ Real-Debrid Direct Stream (${unrestrictRes.data.filename || 'MP4'})`,
+            title: `⚡ Real-Debrid Direct (${unrestrictRes.data.filename || 'Direct MP4'})`,
             url: unrestrictRes.data.download
           };
         }
@@ -99,21 +58,54 @@ async function unrestrictMagnetWithRD(infoHash) {
   return null;
 }
 
+// Získání funkčních dat z API
+async function fetchTorrents(searchQuery) {
+  const query = searchQuery ? encodeURIComponent(searchQuery) : '1080p';
+  const urls = [
+    `https://apibay.org/q.php?q=${query}&cat=500`,
+    `https://apibay.org/q.php?q=xxx&cat=500`,
+    `https://apibay.org/q.php?q=hd&cat=500`
+  ];
+
+  for (const url of urls) {
+    try {
+      const res = await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json'
+        },
+        timeout: 8000
+      });
+      let data = res.data;
+      if (typeof data === 'string') {
+        try { data = JSON.parse(data); } catch (e) { data = null; }
+      }
+      if (Array.isArray(data) && data.length > 0 && data[0].id !== '0') {
+        return data;
+      }
+    } catch (e) {
+      console.warn(`[Fetch Warning] ${e.message}`);
+    }
+  }
+  return [];
+}
+
+// Manifest přesně odpovídající starému nastavení v Nuvio
 const manifest = {
-  id: "org.tpb.adult.nuvio.v3",
-  version: "3.2.0",
-  name: "Adult Catalog (Real-Debrid)",
-  description: "Doplněk pro Nuvio s adult torrenty a Real-Debrid přehráváním",
+  id: "org.fullporn.nuvio.custom",
+  version: "3.3.0",
+  name: "FullPorn Catalog",
+  description: "Doplněk pro Nuvio s přímým odblokováním přes Real-Debrid",
   logo: "https://thepiratebay.org/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
   types: ["movie", "other"],
-  idPrefixes: ["tpba:"],
+  idPrefixes: ["fp:", "tpba:", "ep:"],
   catalogs: [
     {
       type: "other",
-      id: "tpba_main",
-      name: "Adult Catalog - Top Videa",
+      id: "fp_main",
+      name: "FullPorn - Všechna videa",
       extra: [
         { name: "search", isRequired: false },
         { name: "skip", isRequired: false }
@@ -143,22 +135,21 @@ function formatSize(bytes) {
   return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// 1. CATALOG ENDPOINT
+// 1. CATALOG ENDPOINT (Reaguje na jakékoliv ID katalogu)
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
   const { search } = extra;
 
   try {
-    const rawItems = await fetchAdultTorrents(search);
+    const rawItems = await fetchTorrents(search);
     const metas = [];
 
     rawItems.forEach(item => {
       if (!item.info_hash || item.id === '0') return;
-
       const sizeStr = formatSize(item.size);
       metas.push({
-        id: `tpba:${item.info_hash}`,
+        id: `fp:${item.info_hash}`,
         type: "other",
         name: item.name,
         poster: manifest.background,
@@ -166,7 +157,7 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       });
     });
 
-    console.log(`[Catalog Success] Naparsováno ${metas.length} videí.`);
+    console.log(`[Catalog Success] Odpovídám s ${metas.length} položkami.`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -177,16 +168,16 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 // 2. META ENDPOINT
 app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   const rawId = req.params.id.replace(/\.json$/, '');
-  const infoHash = rawId.replace('tpba:', '');
+  const infoHash = rawId.replace(/^(fp:|tpba:|ep:)/, '');
 
   res.json({
     meta: {
       id: rawId,
       type: "other",
-      name: `Torrent Detail (${infoHash.substring(0, 8)})`,
+      name: `Adult Stream (${infoHash.substring(0, 8)})`,
       poster: manifest.background,
       background: manifest.background,
-      description: "Přehrávání obsahu přes Real-Debrid."
+      description: "Přehrávání přes Real-Debrid."
     }
   });
 });
@@ -194,24 +185,23 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
 // 3. STREAM ENDPOINT
 app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   const rawId = req.params.id.replace(/\.json$/, '');
-  const infoHash = rawId.replace('tpba:', '');
+  const infoHash = rawId.replace(/^(fp:|tpba:|ep:)/, '');
 
   try {
     const streams = [];
 
-    // Odblokování přes Real-Debrid API na přímý přehratelný odkaz
+    // Odblokování přes Real-Debrid
     const rdResult = await unrestrictMagnetWithRD(infoHash);
     if (rdResult) {
       streams.push(rdResult);
     }
 
-    // Zložní P2P magnet stream
+    // Záložní magnet odkaz
     streams.push({
       title: "Torrent Stream (InfoHash)",
       infoHash: infoHash
     });
 
-    console.log(`[Stream Success] Vráceno ${streams.length} streamů.`);
     res.json({ streams });
   } catch (err) {
     console.error('[Stream Error]:', err.message);
@@ -219,4 +209,4 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v3.2.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Addon v3.3.0 spuštěn na portu ${PORT}`));
