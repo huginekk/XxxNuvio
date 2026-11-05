@@ -1,18 +1,14 @@
 {
-  "name": "nuvio-fullporn-addon",
-  "version": "1.0.0",
-  "description": "Stremio-compatible catalog addon for Nuvio",
+  "name": "nuvio-eporner-addon",
+  "version": "2.0.0",
+  "description": "Nuvio Adult Addon",
   "main": "server.js",
-  "type": "commonjs",
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
+    "axios": "^1.6.8",
     "cors": "^2.8.5",
-    "express": "^4.21.2"
+    "express": "^4.19.2"
   }
 }
