@@ -8,9 +8,14 @@ const PORT = process.env.PORT || 7000;
 // === REAL-DEBRID API TOKEN ===
 const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
 
+const HTTP_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*'
+};
+
 app.use(cors());
 
-// Odblokování odkazu přes Real-Debrid API (podporuje Eporner i RedTube)
+// Odblokování odkazu přes Real-Debrid API
 async function unrestrictWithRD(targetUrl) {
   if (!RD_TOKEN) return null;
   try {
@@ -85,12 +90,11 @@ async function unrestrictMagnetWithRD(infoHash) {
   return null;
 }
 
-// MANIFEST PRO NUVIO (Zdroje / Servry)
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "5.0.0",
+  version: "5.1.0",
   name: "Multi-Source Adult Catalog",
-  description: "Doplněk pro Nuvio s výběrem serverů (Eporner, RedTube, Torrenty) a Real-Debrid",
+  description: "Doplněk pro Nuvio s funkčními servery Eporner, RedTube a Torrenty",
   logo: "https://www.eporner.com/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
@@ -178,17 +182,26 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
   try {
     const metas = [];
 
-    // A. SERVER REDTUBE
+    // A. SERVER REDTUBE (Opravená logika API metod)
     if (catalogId === 'cat_redtube') {
-      const query = search || (genre && genre !== 'Vše' ? genre : 'all');
-      const rtUrl = `https://api.redtube.com/?data=redtube.Videos.searchVideo&output=json&search=${encodeURIComponent(query)}&thumbsize=big&page=${page}`;
-      console.log(`[Fetch RedTube] ${rtUrl}`);
+      const hasSearch = search || (genre && genre !== 'Vše');
+      let rtUrl = '';
 
-      const response = await axios.get(rtUrl, { timeout: 8000 });
-      if (response.data && response.data.videos) {
-        response.data.videos.forEach(item => {
-          const v = item.video;
-          if (!v) return;
+      if (hasSearch) {
+        const query = search || genre;
+        rtUrl = `https://api.redtube.com/?data=redtube.Videos.searchVideo&output=json&search=${encodeURIComponent(query)}&thumbsize=big&page=${page}`;
+      } else {
+        rtUrl = `https://api.redtube.com/?data=redtube.Videos.getVideolist&output=json&thumbsize=big&page=${page}`;
+      }
+
+      console.log(`[Fetch RedTube] ${rtUrl}`);
+      const response = await axios.get(rtUrl, { headers: HTTP_HEADERS, timeout: 8000 });
+      
+      const rawVideos = response.data?.videos || response.data?.video || [];
+      if (Array.isArray(rawVideos)) {
+        rawVideos.forEach(item => {
+          const v = item.video || item;
+          if (!v || !v.video_id) return;
           metas.push({
             id: `rt:${v.video_id}`,
             type: "other",
@@ -200,13 +213,13 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       }
     }
 
-    // B. SERVER TORRENTY (SolidTorrents API)
+    // B. SERVER TORRENTY (SolidTorrents API + Headers)
     else if (catalogId === 'cat_torrents') {
       let query = search || (genre && genre !== 'Vše' ? genre : '1080p');
       const stUrl = `https://solidtorrents.to/api/v1/search?q=${encodeURIComponent(query)}&category=nsfw`;
       console.log(`[Fetch Torrents] ${stUrl}`);
 
-      const response = await axios.get(stUrl, { timeout: 8000 });
+      const response = await axios.get(stUrl, { headers: HTTP_HEADERS, timeout: 8000 });
       if (response.data && response.data.results) {
         response.data.results.slice(0, 30).forEach(item => {
           if (!item.infohash) return;
@@ -222,13 +235,13 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       }
     }
 
-    // C. SERVER EPORNER (Výchozí pro fp_main)
+    // C. SERVER EPORNER
     else {
       let query = search || (genre && genre !== 'Vše' ? genre : 'all');
       const epUrl = `https://www.eporner.com/api/v2/video/search/?query=${encodeURIComponent(query)}&per_page=30&page=${page}&format=json`;
       console.log(`[Fetch Eporner] ${epUrl}`);
 
-      const response = await axios.get(epUrl, { timeout: 8000 });
+      const response = await axios.get(epUrl, { headers: HTTP_HEADERS, timeout: 8000 });
       if (response.data && response.data.videos) {
         response.data.videos.forEach(v => {
           metas.push({
@@ -254,11 +267,10 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
   const rawId = req.params.id.replace(/\.json$/, '');
 
-  // A. RedTube Meta
   if (rawId.startsWith('rt:')) {
     const videoId = rawId.replace('rt:', '');
     try {
-      const resRt = await axios.get(`https://api.redtube.com/?data=redtube.Videos.getVideoById&video_id=${videoId}&output=json&thumbsize=big`, { timeout: 6000 });
+      const resRt = await axios.get(`https://api.redtube.com/?data=redtube.Videos.getVideoById&video_id=${videoId}&output=json&thumbsize=big`, { headers: HTTP_HEADERS, timeout: 6000 });
       const v = resRt.data?.video || resRt.data?.videos?.[0]?.video;
       if (v) {
         return res.json({
@@ -275,11 +287,10 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
     } catch (e) {}
   }
 
-  // B. Eporner Meta
   if (rawId.startsWith('fp:') || rawId.startsWith('ep:')) {
     const videoId = rawId.replace(/^(fp:|ep:)/, '');
     try {
-      const resEp = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`, { timeout: 6000 });
+      const resEp = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`, { headers: HTTP_HEADERS, timeout: 6000 });
       if (resEp.data) {
         const v = resEp.data;
         return res.json({
@@ -296,7 +307,6 @@ app.get(['/meta/:type/:id.json', '/meta/:type/:id'], async (req, res) => {
     } catch (e) {}
   }
 
-  // Výchozí Meta fallback
   res.json({
     meta: {
       id: rawId,
@@ -315,7 +325,6 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   const streams = [];
 
   try {
-    // A. RedTube Stream (Real-Debrid + Direct Embed)
     if (rawId.startsWith('rt:')) {
       const videoId = rawId.replace('rt:', '');
       const rtPageUrl = `https://www.redtube.com/${videoId}`;
@@ -329,8 +338,6 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         url: `https://embed.redtube.com/?id=${videoId}`
       });
     }
-
-    // B. Torrent Stream (Real-Debrid Magnet)
     else if (rawId.startsWith('st:')) {
       const infoHash = rawId.replace('st:', '');
       const rdTorrent = await unrestrictMagnetWithRD(infoHash);
@@ -342,8 +349,6 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         infoHash: infoHash
       });
     }
-
-    // C. Eporner Stream (Real-Debrid + Direct Embed)
     else {
       const videoId = rawId.replace(/^(fp:|ep:)/, '');
       const epPageUrl = `https://www.eporner.com/video-${videoId}/`;
@@ -353,7 +358,7 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
         streams.push(rdStream);
       }
 
-      const resEp = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`, { timeout: 6000 });
+      const resEp = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`, { headers: HTTP_HEADERS, timeout: 6000 });
       if (resEp.data && resEp.data.embed) {
         streams.push({
           title: "Standard Web Stream",
@@ -370,4 +375,4 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v5.0.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Addon v5.1.0 spuštěn na portu ${PORT}`));
