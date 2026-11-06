@@ -39,9 +39,9 @@ async function unrestrictWithRD(targetUrl) {
 
 const manifest = {
   id: "org.fullporn.nuvio.custom",
-  version: "4.0.0",
+  version: "4.1.0",
   name: "FullPorn Catalog",
-  description: "Doplněk pro Nuvio s reálnými náhledy, filtrem kvalit a Real-Debrid",
+  description: "Doplněk pro Nuvio s filtrem kvalit, studií a Real-Debrid přehráváním",
   logo: "https://www.eporner.com/favicon.ico",
   background: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920",
   resources: ["catalog", "meta", "stream"],
@@ -56,7 +56,12 @@ const manifest = {
         {
           name: "genre",
           isRequired: false,
-          options: ["Vše", "4K", "1080p", "720p", "Amateur", "Anal", "POV", "MILF", "VR", "Asian", "Latina"]
+          options: [
+            "Vše",
+            "4K", "1080p", "720p",
+            "SexArt", "Nubiles", "MetArt", "TeamSkeet", "Brazzers", "Vixen", "Naughty America",
+            "Amateur", "Anal", "POV", "MILF", "VR", "Asian", "Latina", "Lesbian"
+          ]
         },
         { name: "search", isRequired: false },
         { name: "skip", isRequired: false }
@@ -77,7 +82,7 @@ function parseExtra(extraStr) {
   return res;
 }
 
-// 1. CATALOG ENDPOINT (Stabilní API + Reálné fotky)
+// 1. CATALOG ENDPOINT (Vyhledávání + Filtry + Studia)
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const extraStr = req.params.extra || '';
   const extra = parseExtra(extraStr);
@@ -105,7 +110,7 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       });
     }
 
-    console.log(`[Catalog Success] Odosláno ${metas.length} videí s fotkami.`);
+    console.log(`[Catalog Success] Odosláno ${metas.length} videí pro dotaz: "${query}".`);
     res.json({ metas });
   } catch (err) {
     console.error('[Catalog Error]:', err.message);
@@ -161,13 +166,13 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
     const streams = [];
     const videoUrl = `https://www.eporner.com/video-${videoId}/`;
 
-    // 1. Přímé odblokování přes Real-Debrid
+    // Přímé odblokování přes Real-Debrid
     const rdStream = await unrestrictWithRD(videoUrl);
     if (rdStream) {
       streams.push(rdStream);
     }
 
-    // 2. Záložní přehrávač z API
+    // Záložní přehrávač z API
     const apiUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoId}&format=json`;
     const response = await axios.get(apiUrl, { timeout: 8000 });
 
@@ -186,4 +191,4 @@ app.get(['/stream/:type/:id.json', '/stream/:type/:id'], async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Addon v4.0.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Addon v4.1.0 spuštěn na portu ${PORT}`));
