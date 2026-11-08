@@ -5,123 +5,74 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 7000;
 
-// Loga a záložní obrázky pro jednotlivé zdroje
-const IMG_EPORNER = 'https://upload.wikimedia.org/wikipedia/commons/e/e1/Adult_content_icon.svg';
-const IMG_HQPORNER = 'https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?q=80&w=500';
-const IMG_REDTUBE = 'https://upload.wikimedia.org/wikipedia/commons/4/4c/RedTube_logo.svg';
+// Váš Real-Debrid API token a TMDB API klíč
+const RD_TOKEN = 'O4J2OEAEIRF6IVVLJHXVUFMCKIGBDGHHOYW6INH5HIKUVWUXBZZQ';
+const TMDB_KEY = 'bcd898f31f5a923f94ccedb7d9c2b1a7';
+const DEFAULT_POSTER = 'https://upload.wikimedia.org/wikipedia/commons/e/e1/Adult_content_icon.svg';
 
 app.use(cors());
 
 function extractCleanId(rawParamId) {
   if (!rawParamId) return '';
   let decoded = decodeURIComponent(rawParamId);
-  return decoded.replace(/\.json$/, '').trim();
+  return decoded.replace(/\.json$/, '').replace(/^(tmdb:|tmdb%3A)/i, '').trim();
 }
 
-// === 1. EPORNER ===
-async function getEpornerStreams(videoId) {
+// Vyhledání XXX streamů přes Torrentio + Real-Debrid
+async function getAdultRealDebridStreams(imdbId) {
   const streams = [];
   try {
-    const res = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, { timeout: 7000 });
-    if (res.data && res.data.files) {
-      const files = res.data.files;
-      Object.keys(files).sort().reverse().forEach(q => {
-        if (files[q] && files[q].url) {
-          streams.push({
-            title: `🔞 Eporner [${q.toUpperCase()}]`,
-            url: files[q].url
-          });
-        }
-      });
-    }
-  } catch (err) {}
-  return streams;
-}
-
-// === 2. HQPORNER ===
-async function getHqpornerStreams(videoId) {
-  const streams = [];
-  try {
-    // HQPorner API fallback / direct MP4 resolver
-    const res = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, { timeout: 7000 });
-    if (res.data && res.data.files) {
-      const files = res.data.files;
-      Object.keys(files).sort().reverse().forEach(q => {
-        if (files[q] && files[q].url) {
-          streams.push({
-            title: `🎬 HQPorner HD [${q.toUpperCase()}]`,
-            url: files[q].url
-          });
-        }
-      });
-    }
-  } catch (err) {}
-  return streams;
-}
-
-// === 3. REDTUBE ===
-async function getRedtubeStreams(videoId) {
-  const streams = [];
-  try {
-    const res = await axios.get(`https://api.redtube.com/?data=redtube.Videos.getVideoById&video_id=${videoId}&output=json`, {
+    const torrentioUrl = `https://torrentio.strem.fun/stream/movie/${imdbId}.json`;
+    const res = await axios.get(torrentioUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-      timeout: 7000
+      timeout: 8000
     });
-    const video = res.data?.video;
-    if (video && video.mediaqueries) {
-      Object.keys(video.mediaqueries).forEach(q => {
-        const item = video.mediaqueries[q];
-        if (item && item.videoUrl) {
+
+    if (res.data && res.data.streams) {
+      for (const s of res.data.streams) {
+        let streamUrl = s.url;
+
+        // Pokud je k dispozici infoHash, převedeme ho přes Real-Debrid API
+        if (s.infoHash && RD_TOKEN) {
+          streamUrl = `https://torrentio.strem.fun/realdebrid/${RD_TOKEN}/${s.infoHash}/${s.fileIdx || 0}`;
+        }
+
+        if (streamUrl) {
+          const titleLine = (s.title || '').split('\n')[0];
           streams.push({
-            title: `🔴 RedTube Direct [${q}p]`,
-            url: item.videoUrl
+            title: `⚡ RD Ultra HD [${titleLine}]`,
+            url: streamUrl
           });
         }
-      });
+      }
     }
-  } catch (err) {}
+  } catch (err) {
+    console.warn('[RD Stream Warning]:', err.message);
+  }
   return streams;
 }
 
-// Manifest doplňku se všemi novými kategoriemi
 const manifest = {
-  id: "org.adult.multi.nuvio.v4",
-  version: "4.0.0",
-  name: "🔞 Adult Pack (Eporner / HQPorner / RedTube)",
-  description: "Přímé HD streamy a kategorie z Eporner, HQPorner a RedTube",
-  logo: IMG_EPORNER,
+  id: "org.adult.realdebrid.v5",
+  version: "5.0.0",
+  name: "🔞 Adult Real-Debrid Pack",
+  description: "Dospělé XXX filmy v 1080p/4K s přímým přehráváním přes Real-Debrid",
+  logo: DEFAULT_POSTER,
+  background: DEFAULT_POSTER,
   resources: ["catalog", "meta", "stream"],
   types: ["movie"],
-  idPrefixes: ["ep:", "hq:", "rt:"],
+  idPrefixes: ["tmdb:"],
   catalogs: [
     {
       type: "movie",
-      id: "ep_popular",
-      name: "🔥 Eporner - Populární",
+      id: "xxx_popular",
+      name: "🔥 XXX Premium Filmy",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     },
     {
       type: "movie",
-      id: "ep_top",
-      name: "⭐ Eporner - Najlépe hodnocené",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "movie",
-      id: "hq_latest",
-      name: "🎬 HQPorner - Najnovější HD",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "movie",
-      id: "hq_popular",
-      name: "🔥 HQPorner - Populární",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "movie",
-      id: "rt_videos",
-      name: "🔴 RedTube - Videa",
+      id: "xxx_top",
+      name: "⭐ XXX 1080p & 4K Trháky",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     }
   ],
@@ -148,49 +99,33 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
   const metas = [];
 
   try {
-    if (catalogId.startsWith('ep_') || catalogId.startsWith('hq_')) {
-      let orderParam = (catalogId === 'ep_top' || catalogId === 'hq_popular') ? 'top-rated' : 'latest';
-      let query = search ? encodeURIComponent(search) : 'all';
-      let url = `https://www.eporner.com/api/v2/video/search/?query=${query}&per_page=24&page=${page}&order=${orderParam}&thumbsize=big`;
+    let url = '';
+    if (search) {
+      url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_KEY}&query=${encodeURIComponent(search)}&include_adult=true&page=${page}`;
+    } else if (catalogId === 'xxx_top') {
+      url = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_KEY}&with_genres=10749&include_adult=true&sort_by=vote_average.desc&vote_count.gte=10&page=${page}`;
+    } else {
+      url = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_KEY}&with_genres=10749&include_adult=true&sort_by=popularity.desc&page=${page}`;
+    }
 
-      const response = await axios.get(url, { timeout: 8000 });
-      if (response.data && response.data.videos) {
-        response.data.videos.forEach(v => {
-          const isHq = catalogId.startsWith('hq_');
-          const posterImg = v.default_thumb?.src || (isHq ? IMG_HQPORNER : IMG_EPORNER);
-          metas.push({
-            id: isHq ? `hq:${v.id}` : `ep:${v.id}`,
-            type: "movie",
-            name: isHq ? `[HD] ${v.title}` : v.title,
-            poster: posterImg,
-            description: `Délka: ${v.length_min || '?'} min | Hodnocení: ${v.rate || '0'}/5`
-          });
+    const response = await axios.get(url, { timeout: 8000 });
+
+    if (response.data && response.data.results) {
+      response.data.results.forEach(item => {
+        if (!item.title) return;
+        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : DEFAULT_POSTER;
+        metas.push({
+          id: `tmdb:${item.id}`,
+          type: "movie",
+          name: item.title,
+          poster: poster,
+          description: item.overview || `Hodnocení: ${item.vote_average}/10 | Rok: ${(item.release_date || '').split('-')[0]}`
         });
-      }
-    } else if (catalogId === 'rt_videos') {
-      const searchQuery = search ? `&search=${encodeURIComponent(search)}` : '';
-      const url = `https://api.redtube.com/?data=redtube.Videos.searchVideos&output=json&page=${page}${searchQuery}`;
-      const response = await axios.get(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        timeout: 8000
       });
-
-      if (response.data && response.data.videos) {
-        response.data.videos.forEach(item => {
-          const v = item.video;
-          if (!v) return;
-          metas.push({
-            id: `rt:${v.video_id}`,
-            type: "movie",
-            name: v.title,
-            poster: v.default_thumb || IMG_REDTUBE,
-            description: `Délka: ${v.duration || '?'} | Hodnocení: ${v.rating || '0'}`
-          });
-        });
-      }
     }
     res.json({ metas });
   } catch (err) {
+    console.error('[Catalog Error]:', err.message);
     res.json({ metas: [] });
   }
 });
@@ -198,71 +133,67 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
 // 2. META ENDPOINT
 app.get('/meta/:type/:id*', async (req, res) => {
   const rawIdParam = req.params.id + (req.params[0] || '');
-  const cleanId = extractCleanId(rawIdParam);
+  const tmdbId = extractCleanId(rawIdParam);
 
-  if (cleanId.startsWith('ep:') || cleanId.startsWith('hq:')) {
-    const isHq = cleanId.startsWith('hq:');
-    const videoId = cleanId.replace(/^(ep:|hq:)/, '');
-    try {
-      const response = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, { timeout: 7000 });
-      const v = response.data;
-      if (v && v.title) {
-        const img = v.default_thumb?.src || (isHq ? IMG_HQPORNER : IMG_EPORNER);
-        return res.json({
-          meta: {
-            id: cleanId,
-            type: "movie",
-            name: v.title,
-            poster: img,
-            background: img,
-            description: `Délka: ${v.length_min || '?'} min | Hodnocení: ${v.rate || '0'}/5`
-          }
-        });
-      }
-    } catch (e) {}
-  } else if (cleanId.startsWith('rt:')) {
-    const videoId = cleanId.replace('rt:', '');
-    try {
-      const response = await axios.get(`https://api.redtube.com/?data=redtube.Videos.getVideoById&video_id=${videoId}&output=json`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        timeout: 7000
+  try {
+    const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=cs-CZ`;
+    const response = await axios.get(url, { timeout: 8000 });
+    const data = response.data;
+
+    if (data && data.id) {
+      const poster = data.poster_path ? `https://image.tmdb.org/t/p/w500${data.poster_path}` : DEFAULT_POSTER;
+      const background = data.backdrop_path ? `https://image.tmdb.org/t/p/w1280${data.backdrop_path}` : poster;
+
+      return res.json({
+        meta: {
+          id: `tmdb:${data.id}`,
+          type: "movie",
+          name: data.title || data.original_title,
+          poster: poster,
+          background: background,
+          description: data.overview || 'Adult Premium Title',
+          releaseInfo: (data.release_date || '').split('-')[0]
+        }
       });
-      const v = response.data?.video;
-      if (v && v.title) {
-        return res.json({
-          meta: {
-            id: cleanId,
-            type: "movie",
-            name: v.title,
-            poster: v.default_thumb || IMG_REDTUBE,
-            background: v.default_thumb || IMG_REDTUBE,
-            description: `Délka: ${v.duration || '?'}`
-          }
-        });
-      }
-    } catch (e) {}
+    }
+  } catch (err) {
+    console.error('[Meta Error]:', err.message);
   }
 
   res.json({
-    meta: { id: cleanId, type: "movie", name: "Adult Video", poster: IMG_EPORNER, background: IMG_EPORNER, description: "Přehrávání..." }
+    meta: {
+      id: `tmdb:${tmdbId}`,
+      type: "movie",
+      name: "XXX Film",
+      poster: DEFAULT_POSTER,
+      background: DEFAULT_POSTER,
+      description: "Přehrávání přes Real-Debrid..."
+    }
   });
 });
 
 // 3. STREAM ENDPOINT
 app.get('/stream/:type/:id*', async (req, res) => {
   const rawIdParam = req.params.id + (req.params[0] || '');
-  const cleanId = extractCleanId(rawIdParam);
-  let streams = [];
+  const tmdbId = extractCleanId(rawIdParam);
 
-  if (cleanId.startsWith('ep:')) {
-    streams = await getEpornerStreams(cleanId.replace('ep:', ''));
-  } else if (cleanId.startsWith('hq:')) {
-    streams = await getHqpornerStreams(cleanId.replace('hq:', ''));
-  } else if (cleanId.startsWith('rt:')) {
-    streams = await getRedtubeStreams(cleanId.replace('rt:', ''));
+  try {
+    // 1. Zjistíme IMDb ID
+    const tmdbRes = await axios.get(`https://api.themoviedb.org/3/movie/${tmdbId}/external_ids?api_key=${TMDB_KEY}`, { timeout: 6000 });
+    const imdbId = tmdbRes.data?.imdb_id;
+
+    if (!imdbId) {
+      return res.json({ streams: [] });
+    }
+
+    // 2. Vytáhneme Real-Debrid streamy
+    const streams = await getAdultRealDebridStreams(imdbId);
+    console.log(`[Stream Success] Odesláno ${streams.length} Real-Debrid streamů pro ${imdbId}`);
+    res.json({ streams });
+  } catch (err) {
+    console.error('[Stream Error]:', err.message);
+    res.json({ streams: [] });
   }
-
-  res.json({ streams });
 });
 
-app.listen(PORT, () => console.log(`Adult Pack v4.0.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Adult Real-Debrid Addon v5.0.0 spuštěn na portu ${PORT}`));
