@@ -1,17 +1,16 @@
+
 {
   "name": "fullporn-stremio-addon",
-  "version": "8.0.0",
-  "description": "FullPorn.to Addon pro Nuvio",
+  "version": "9.0.0",
+  "description": "FullPorn.to addon for Nuvio",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
     "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "puppeteer": "^21.5.0"
+    "express": "^4.21.2",
+    "cheerio": "^1.0.0",
+    "axios": "^1.7.9"
   }
 }
