@@ -12,56 +12,63 @@ app.use(cors());
 function extractCleanId(rawParamId) {
   if (!rawParamId) return '';
   let decoded = decodeURIComponent(rawParamId);
-  return decoded.replace(/\.json$/, '').trim();
+  decoded = decoded.replace(/\.json$/, '').trim();
+  // Vytáhne ID i v případě předpon ep: nebo tmdb:
+  const match = decoded.match(/\d+/);
+  return match ? match[0] : decoded;
 }
 
-// Přímé MP4 streamy z Eporneru (všechny dostupné kvality 1080p, 720p, 480p)
+// Získání streamů přímo z Eporner API
 async function getEpornerStreams(videoId) {
   const streams = [];
   try {
-    const res = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, { timeout: 7000 });
+    const res = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.eporner.com/'
+      },
+      timeout: 8000
+    });
+
     if (res.data && res.data.files) {
       const files = res.data.files;
-      const qualities = Object.keys(files).sort().reverse();
-      qualities.forEach(q => {
+      // Projdeme všechny dostupné kvality
+      for (const q of Object.keys(files)) {
         if (files[q] && files[q].url) {
           streams.push({
-            title: `🔞 Direct MP4 [${q.toUpperCase()}]`,
+            name: "Eporner Direct",
+            title: `🔞 ${q.toUpperCase()} (MP4 Direct)`,
             url: files[q].url
           });
         }
-      });
+      }
     }
-  } catch (err) {}
+  } catch (err) {
+    console.error(`[Eporner Fetch Error for ${videoId}]:`, err.message);
+  }
   return streams;
 }
 
 const manifest = {
-  id: "org.pure.adult.nuvio.v6",
-  version: "6.0.0",
-  name: "🔞 Pure XXX Catalog",
-  description: "Pouze 100% adult videa s okamžitým přímým přehráváním",
+  id: "org.pure.adult.nuvio.v7",
+  version: "7.0.0",
+  name: "🔞 Pure Eporner XXX",
+  description: "Přímé HD streamy bez cenzury pro Nuvio",
   logo: DEFAULT_POSTER,
   resources: ["catalog", "meta", "stream"],
-  types: ["movie"],
+  types: ["movie", "other"],
   idPrefixes: ["ep:"],
   catalogs: [
     {
       type: "movie",
       id: "ep_popular",
-      name: "🔥 XXX Most Popular",
+      name: "🔥 Eporner Popular",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     },
     {
       type: "movie",
       id: "ep_top",
-      name: "⭐ XXX Top Rated HD",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "movie",
-      id: "ep_latest",
-      name: "🎬 XXX Latest Uploads",
+      name: "⭐ Eporner Top Rated",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     }
   ],
@@ -79,7 +86,7 @@ function parseExtra(extraStr) {
   return res;
 }
 
-// 1. CATALOG ENDPOINT (Čistý XXX obsah z Eporner API)
+// 1. CATALOG
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const { id: catalogId, extra: extraStr } = req.params;
   const extra = parseExtra(extraStr);
@@ -88,10 +95,7 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
   const metas = [];
 
   try {
-    let orderParam = 'most-popular';
-    if (catalogId === 'ep_top') orderParam = 'top-rated';
-    if (catalogId === 'ep_latest') orderParam = 'latest';
-
+    let orderParam = catalogId === 'ep_top' ? 'top-rated' : 'most-popular';
     let query = search ? encodeURIComponent(search) : 'all';
     let url = `https://www.eporner.com/api/v2/video/search/?query=${query}&per_page=24&page=${page}&order=${orderParam}&thumbsize=big`;
 
@@ -114,11 +118,10 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
   }
 });
 
-// 2. META ENDPOINT
+// 2. META
 app.get('/meta/:type/:id*', async (req, res) => {
   const rawIdParam = req.params.id + (req.params[0] || '');
-  const cleanId = extractCleanId(rawIdParam);
-  const videoId = cleanId.replace('ep:', '');
+  const videoId = extractCleanId(rawIdParam);
 
   try {
     const response = await axios.get(`https://www.eporner.com/api/v2/video/id/?id=${videoId}`, { timeout: 7000 });
@@ -127,7 +130,7 @@ app.get('/meta/:type/:id*', async (req, res) => {
       const img = v.default_thumb?.src || DEFAULT_POSTER;
       return res.json({
         meta: {
-          id: cleanId,
+          id: `ep:${videoId}`,
           type: "movie",
           name: v.title,
           poster: img,
@@ -139,18 +142,27 @@ app.get('/meta/:type/:id*', async (req, res) => {
   } catch (e) {}
 
   res.json({
-    meta: { id: cleanId, type: "movie", name: "XXX Video", poster: DEFAULT_POSTER, background: DEFAULT_POSTER, description: "Přehrávání..." }
+    meta: {
+      id: `ep:${videoId}`,
+      type: "movie",
+      name: "XXX Video",
+      poster: DEFAULT_POSTER,
+      background: DEFAULT_POSTER,
+      description: "Přehrávání..."
+    }
   });
 });
 
-// 3. STREAM ENDPOINT
-app.get('/stream/:type/:id*', async (req, res) => {
-  const rawIdParam = req.params.id + (req.params[0] || '');
-  const cleanId = extractCleanId(rawIdParam);
-  const videoId = cleanId.replace('ep:', '');
+// 3. STREAM (Ošetřuje libovolný typ v URL z Nuvia)
+app.get('/stream/*/:id*', async (req, res) => {
+  const fullPath = req.params.id + (req.params[0] || '');
+  const videoId = extractCleanId(fullPath);
 
+  console.log(`[Stream Request] Vyžadován stream pro Eporner ID: ${videoId}`);
   const streams = await getEpornerStreams(videoId);
+
+  console.log(`[Stream Output] Nalezeno streamů: ${streams.length}`);
   res.json({ streams });
 });
 
-app.listen(PORT, () => console.log(`Pure Adult Engine v6.0.0 spuštěn na portu ${PORT}`));
+app.listen(PORT, () => console.log(`Eporner Addon v7.0.0 spuštěn na portu ${PORT}`));
